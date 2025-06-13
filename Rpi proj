@@ -1,0 +1,277 @@
+import cv2
+from cvzone.HandTrackingModule import HandDetector
+import time
+import RPi.GPIO as GPIO
+from flask import Flask, render_template, Response
+from rpi_ws281x import PixelStrip, Color
+
+# Set the GPIO mode
+GPIO.setmode(GPIO.BCM)
+buzzer_pin = 3
+
+# Set up the GPIO pin as output
+GPIO.setup(buzzer_pin, GPIO.OUT)
+
+# Set the pin number to which the LED is connected
+readingStageLed = 18
+socket_1 = 23
+socket_2 = 27
+socket_3 = 17
+GPIO.setup(readingStageLed, GPIO.OUT)
+GPIO.setup(socket_1, GPIO.OUT)
+GPIO.setup(socket_2, GPIO.OUT)
+GPIO.setup(socket_3, GPIO.OUT)
+
+# Initialize USB webcam capture with reduced resolution
+cap = cv2.VideoCapture(0)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+# Initialize Hand Detector
+detector = HandDetector(maxHands=1, detectionCon=0.3, minTrackCon=0.3)
+
+led_strip=[255,255,255]
+prev = 0
+present = 0
+Flag = [0, 0, 0]
+initialCounter = 0
+stage = 1
+waitingCounter = 0
+gestureCounter = 0
+
+GPIO.output(socket_1, GPIO.HIGH)
+GPIO.output(socket_2, GPIO.HIGH)
+GPIO.output(socket_3, GPIO.HIGH)
+GPIO.output(readingStageLed, GPIO.LOW)
+
+# LED strip configuration:
+LED_COUNT = 8        # Number of LED pixels.
+LED_PIN = 18         # GPIO pin connected to the pixels (18 uses PWM!).
+LED_FREQ_HZ = 800000 # LED signal frequency in hertz (usually 800khz)
+LED_DMA = 10         # DMA channel to use for generating signal (try 10)
+LED_BRIGHTNESS = 255 # Set to 0 for darkest and 255 for brightest
+LED_INVERT = False   # True to invert the signal (when using NPN transistor level shift)
+
+strip = PixelStrip(LED_COUNT, LED_PIN, LED_FREQ_HZ, LED_DMA, LED_INVERT, LED_BRIGHTNESS)
+strip.begin()
+
+def set_color(color):
+    for i in range(strip.numPixels()):
+        strip.setPixelColor(i, color)
+    strip.show()
+
+
+def transition_color(color1, color2, duration=1, steps=50):
+    # Extract RGB components
+    r1, g1, b1 = color1 >> 16 & 0xFF, color1 >> 8 & 0xFF, color1 & 0xFF
+    r2, g2, b2 = color2 >> 16 & 0xFF, color2 >> 8 & 0xFF, color2 & 0xFF
+    
+    # Transition from color1 to color2
+    for i in range(steps + 1):
+        r = int(r1 + (r2 - r1) * i / steps)
+        g = int(g1 + (g2 - g1) * i / steps)
+        b = int(b1 + (b2 - b1) * i / steps)
+        set_color(Color(r, g, b))
+        #time.sleep(duration / steps)
+
+
+
+def led(count, Flag):
+
+    if count == 1 and Flag[0] == 0:
+        # GPIO.output(socket_1,not GPIO.input(socket_1))
+        GPIO.output(socket_1, GPIO.LOW)
+        print("Pin 1 ON")
+        Flag[0] = 1
+    elif count == 1 and Flag[0] == 1:
+        GPIO.output(socket_1, GPIO.HIGH)
+        print("Pin 1 OFF")
+        Flag[0] = 0
+
+    if count == 2 and Flag[1] == 0:
+        GPIO.output(socket_2, GPIO.LOW)
+        print("Pin 2 ON")
+        Flag[1] = 1
+    elif count == 2 and Flag[1] == 1:
+        GPIO.output(socket_2, GPIO.HIGH)
+        print("Pin 2 Off")
+        Flag[1] = 0
+    
+    if count == 3 and Flag[2] == 0:
+        GPIO.output(socket_3, GPIO.LOW)
+        print("Pin 3 ON")
+        Flag[2] = 1
+    elif count == 3 and Flag[2] == 1:
+        GPIO.output(socket_3, GPIO.HIGH)
+        print("Pin 3 OFF")
+        Flag[2] = 0
+
+    GPIO.output(readingStageLed, GPIO.LOW)
+    return Flag
+
+def count_fingers(lst):
+    count = 69
+    if lst == [0, 0, 0, 0, 0]:
+        count = 0
+    if lst == [0, 1, 0, 0, 0]:
+        count = 1
+    if lst == [0, 1, 1, 0, 0]:
+        count = 2
+    if lst == [0, 1, 1, 1, 0]:
+        count = 3
+    if lst == [0, 1, 1, 1, 1]:
+        count = 4
+    return count
+
+app = Flask(__name__)
+
+def gen_frames():
+    global Flag, stage ,led_strip
+    while True:
+        ret, im = cap.read()  # Capture frame from the webcam
+        if not ret:
+            print("Failed to capture image")
+            break
+
+        # Find hands in the image
+        hands, im = detector.findHands(im, draw=True)
+
+        # Handle hand detection logic
+        if hands:
+            fingers = detector.fingersUp(hands[0])
+            count= count_fingers(fingers)
+            # print("Finger count:", count)
+
+        #Check for initial condition, For 2 seconds STAGE 1
+            if stage == 1:
+                if count==0 :
+                    initialCounter=initialCounter+1
+                     # Transition from white to green
+                    if initialCounter<=5:
+                        transition_color(Color(led_strip[0], 255, led_strip[2]), Color(led_strip[0]-51, 255, led_strip[2]-51))
+                        led_strip[0]=led_strip[0]-51
+                        led_strip[2]=led_strip[2]-51
+                    #time.sleep(2)  # Add a pause before transitioning back
+                    elif initialCounter>15:
+                        GPIO.output(buzzer_pin, GPIO.HIGH)
+                        #print("Buzzer ON")
+                        time.sleep(0.5)  # Buzzer on for 1 second
+                        # Turn off the buzzer
+                        GPIO.output(buzzer_pin, GPIO.LOW)
+                        #print("Buzzer OFF")
+                        stage=2
+                        print("Stage 1 satisfied")
+                        initialCounter=0
+                        led_strip=[0,255,0]
+                    print("Intial Counter",initialCounter)
+                    print("RGB Value:", led_strip,"255",led_strip)
+                else:
+                    initialCounter=0
+                    stage=1
+                    led_strip=[255,255,255]
+
+        # Reading Stage 2, for 5 seconds
+            elif stage == 2:
+                GPIO.output(readingStageLed, GPIO.HIGH)
+                # print("led on")
+                waitingCounter=waitingCounter+1
+                if waitingCounter<=5:
+                    transition_color(Color(led_strip[0], led_strip[1], 0), Color(led_strip[0]+51,led_strip[1]-51, 0))
+                    led_strip[0]=led_strip[0]+51
+                    led_strip[1]=led_strip[1]-51
+                # transition_color(Color(r, g, 0), Color(r+15, g-15, 0))
+                # r=r+15
+                # g=g-15
+                #led_strip=led_strip-17
+                # print("waiting counter", waitingCounter)
+                if waitingCounter<35:
+                    present=count
+                    if prev==present and present!=0:
+                        prev=present
+                        gestureCounter+=1
+                        if gestureCounter>10:
+                            set_color(Color(255, 255, 255))
+                            led_strip=[255,255,255]
+                            print(Flag)
+                            Flag=led(count,Flag)
+                            print(Flag)
+                            # print("Its ON/OFF")
+                            gestureCounter=0
+                            stage=1
+                            waitingCounter=0
+                            initialCounter=0
+                    else:
+                        #set_color(Color(255, 255, 255))    
+                        prev=present
+                        gestureCounter=0
+                        #waitingCounter=0
+                else:
+                    GPIO.output(buzzer_pin, GPIO.HIGH)
+                    #print("Buzzer ON")
+                    time.sleep(0.2)  # Buzzer on for 1 second
+                    # Turn off the buzzer
+                    GPIO.output(buzzer_pin, GPIO.LOW)
+                    #print("Buzzer OFF")
+                    time.sleep(0.2)
+                    GPIO.output(buzzer_pin, GPIO.HIGH)
+                    #print("Buzzer ON")
+                    time.sleep(0.2)  # Buzzer on for 1 second
+                    # Turn off the buzzer
+                    GPIO.output(buzzer_pin, GPIO.LOW)
+                    #print("Buzzer OFF")
+                    GPIO.output(readingStageLed, GPIO.LOW)
+                    led_strip=[255,255,255]
+                    set_color(Color(255, 255, 255))
+                    print("Time limit exceeded")
+                    waitingCounter=0
+                    stage=1
+                    prev=0
+                    present=0
+                    initialCounter=0
+                    gestureCounter=0
+
+    
+            # print(" initial condition counter: " , initialCounter)
+            print("Stage" , stage)
+            print("InitialCounter:",initialCounter)
+            print("Waiting COunter:",waitingCounter)
+            print("Gesture Counter:",gestureCounter)
+
+        else:
+            set_color(Color(255,255,255))
+            led_strip=[255,255,255]
+            prev=0
+            present=0
+            initialCounter=0
+            stage=1
+            waitingCounter=0
+            gestureCounter=0
+            GPIO.output(readingStageLed, GPIO.LOW)
+ 
+        ret, buffer = cv2.imencode('.jpg', im)
+        im = buffer.tobytes()
+        yield (b'--frame\r\n'
+            b'Content-Type: image/jpeg\r\n\r\n' + im + b'\r\n')  # concat frame one by one and show result
+
+@app.route('/')
+def camera():
+    return render_template('index.html')
+
+@app.route('/video_feed')
+def video_feed():
+    return Response(gen_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route("/toggle/<int:count>")
+def toggle_pin(count):
+    stage = 1
+    initialCounter=0
+    led_strip=[255,255,255]
+    waitingCounter = 0
+    gestureCounter = 0
+    # Toggle the specified pin
+    led(count,Flag)
+    set_color(Color(255,255,255))
+    # GPIO.output(pin, not GPIO.input(pin))
+    return "Pin {} toggled".format(count)
+
+app.run(host='0.0.0.0', port='5000',debug=False)
